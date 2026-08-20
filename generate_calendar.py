@@ -346,98 +346,18 @@ def make_event(
 # BBC Match of the Day
 # ------------------------------------------------------------
 
-def fetch_bbc_schedule(day):
+def fetch_bbc_schedule_channel(day, channel_id):
     """
-    BBC One schedule.
+    Fetch a BBC TV channel schedule for a particular day
+    and extract Match of the Day programmes.
 
-    p00fzl9m is the BBC One TV schedule.
+    BBC One and BBC Two are both checked because Match of
+    the Day 2 can appear on BBC Two.
     """
 
     url = (
         "https://www.bbc.co.uk/schedules/"
-        f"p00fzl9m/{day:%Y/%m/%d}"
-    )
-
-    response = requests.get(
-        url,
-        headers=HEADERS,
-        timeout=30,
-    )
-
-    if response.status_code != 200:
-        return []
-
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    programmes = []
-
-    # BBC schedule pages contain programme titles and
-    # start times. We deliberately use broad text matching
-    # because BBC's page markup changes occasionally.
-    for element in soup.find_all(
-        string=re.compile(
-            r"Match of the Day",
-            re.IGNORECASE,
-        )
-    ):
-        title = clean(element)
-
-        if not title:
-            continue
-
-        # Ignore links/articles that merely mention MOTD.
-        if len(title) > 100:
-            continue
-
-        parent = element.parent
-
-        # Look around the programme entry for a time.
-        container = parent
-
-        for _ in range(6):
-            if not container:
-                break
-
-            text = clean(
-                container.get_text(" ", strip=True)
-            )
-
-            time_match = re.search(
-                r"\b(\d{1,2}):(\d{2})\b",
-                text,
-            )
-
-            if time_match:
-                hour = int(time_match.group(1))
-                minute = int(time_match.group(2))
-
-                if hour <= 23 and minute <= 59:
-                    programmes.append(
-                        (
-                            title,
-                            hour,
-                            minute,
-                        )
-                    )
-                    break
-
-            container = container.parent
-
-    return programmes
-
-
-def fetch_bbc_schedule(day):
-    """
-    Fetch BBC One schedule data for a particular day.
-
-    The BBC schedule page is rendered differently from the
-    Live Football On TV site, so we search the complete page
-    text for Match of the Day programme entries and their
-    associated times.
-    """
-    url = (
-        "https://www.bbc.co.uk/schedules/"
-        f"p00fzl9m/{day:%Y/%m/%d}"
+        f"{channel_id}/{day:%Y/%m/%d}"
     )
 
     response = requests.get(
@@ -449,7 +369,8 @@ def fetch_bbc_schedule(day):
     if response.status_code != 200:
         print(
             f"BBC schedule returned HTTP "
-            f"{response.status_code} for {day}"
+            f"{response.status_code} for "
+            f"{channel_id} on {day}"
         )
         return []
 
@@ -472,11 +393,12 @@ def fetch_bbc_schedule(day):
         if not title:
             continue
 
+        # Ignore links/articles that merely mention MOTD.
         if len(title) > 100:
             continue
 
         # Walk upwards looking for the programme's
-        # surrounding schedule item.
+        # surrounding schedule item and its time.
         container = element.parent
 
         for _ in range(10):
@@ -490,7 +412,6 @@ def fetch_bbc_schedule(day):
                 )
             )
 
-            # BBC times may appear as HH:MM.
             time_match = re.search(
                 r"\b(\d{1,2}):(\d{2})\b",
                 text,
@@ -515,7 +436,7 @@ def fetch_bbc_schedule(day):
 
             container = container.parent
 
-    # Remove duplicates while preserving order.
+    # Remove duplicate discoveries while preserving order.
     unique = []
     seen = set()
 
@@ -531,6 +452,90 @@ def fetch_bbc_schedule(day):
             unique.append(programme)
 
     return unique
+
+
+def fetch_bbc_motd():
+    """
+    Find Match of the Day and Match of the Day 2 in the
+    BBC TV schedules.
+
+    Check both BBC One and BBC Two because MOTD2 can
+    appear on BBC Two depending on the schedule.
+    """
+
+    events = []
+
+    today = datetime.now(UK).date()
+
+    # Look ahead four months.
+    for offset in range(0, 120):
+        day = today + timedelta(days=offset)
+
+        # MOTD normally appears Friday/Saturday/Sunday.
+        if day.weekday() not in (4, 5, 6):
+            continue
+
+        # BBC One and BBC Two.
+        for channel_id in (
+            "p00fzl9m",
+            "p00fzl2k",
+        ):
+            programmes = fetch_bbc_schedule_channel(
+                day,
+                channel_id,
+            )
+
+            for title, hour, minute in programmes:
+
+                title_lower = title.lower()
+
+                if "match of the day 2" in title_lower:
+                    programme_name = "Match of the Day 2"
+
+                elif "match of the day" in title_lower:
+                    programme_name = "Match of the Day"
+
+                else:
+                    continue
+
+                start = datetime(
+                    day.year,
+                    day.month,
+                    day.day,
+                    hour,
+                    minute,
+                    tzinfo=UK,
+                )
+
+                events.append(
+                    make_event(
+                        programme_name,
+                        start,
+                        100,
+                        (
+                            "BBC football highlights. "
+                            "Automatically scheduled from "
+                            "BBC TV listings."
+                        ),
+                        "https://www.bbc.co.uk/sport/football",
+                    )
+                )
+
+    # Remove duplicate events.
+    unique_events = []
+    seen = set()
+
+    for event in events:
+        key = (
+            event.get("summary"),
+            event.get("dtstart"),
+        )
+
+        if key not in seen:
+            seen.add(key)
+            unique_events.append(event)
+
+    return unique_events
 
 
 # ------------------------------------------------------------
