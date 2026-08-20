@@ -426,60 +426,111 @@ def fetch_bbc_schedule(day):
     return programmes
 
 
-def fetch_bbc_motd():
-    events = []
+def fetch_bbc_schedule(day):
+    """
+    Fetch BBC One schedule data for a particular day.
 
-    today = datetime.now(UK).date()
+    The BBC schedule page is rendered differently from the
+    Live Football On TV site, so we search the complete page
+    text for Match of the Day programme entries and their
+    associated times.
+    """
+    url = (
+        "https://www.bbc.co.uk/schedules/"
+        f"p00fzl9m/{day:%Y/%m/%d}"
+    )
 
-    # Look ahead roughly four months.
-    # Checking Fri/Sat/Sun catches the normal MOTD/MOTD2
-    # slots while allowing for changes in scheduling.
-    for offset in range(0, 120):
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        timeout=30,
+    )
 
-        day = today + timedelta(days=offset)
+    if response.status_code != 200:
+        print(
+            f"BBC schedule returned HTTP "
+            f"{response.status_code} for {day}"
+        )
+        return []
 
-        if day.weekday() not in (4, 5, 6):
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser",
+    )
+
+    programmes = []
+
+    # Look through visible text nodes containing MOTD.
+    for element in soup.find_all(
+        string=re.compile(
+            r"Match of the Day",
+            re.IGNORECASE,
+        )
+    ):
+        title = clean(element)
+
+        if not title:
             continue
 
-        programmes = fetch_bbc_schedule(day)
+        if len(title) > 100:
+            continue
 
-        for title, hour, minute in programmes:
+        # Walk upwards looking for the programme's
+        # surrounding schedule item.
+        container = element.parent
 
-            title_lower = title.lower()
+        for _ in range(10):
+            if container is None:
+                break
 
-            if "match of the day 2" in title_lower:
-                programme_name = "Match of the Day 2"
-
-            elif "match of the day" in title_lower:
-                programme_name = "Match of the Day"
-
-            else:
-                continue
-
-            start = datetime(
-                day.year,
-                day.month,
-                day.day,
-                hour,
-                minute,
-                tzinfo=UK,
-            )
-
-            events.append(
-                make_event(
-                    programme_name,
-                    start,
-                    100,
-                    (
-                        "BBC football highlights. "
-                        "Automatically scheduled from the "
-                        "BBC One TV listings."
-                    ),
-                    "https://www.bbc.co.uk/sport/football",
+            text = clean(
+                container.get_text(
+                    " ",
+                    strip=True,
                 )
             )
 
-    return events
+            # BBC times may appear as HH:MM.
+            time_match = re.search(
+                r"\b(\d{1,2}):(\d{2})\b",
+                text,
+            )
+
+            if time_match:
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2))
+
+                if (
+                    hour <= 23
+                    and minute <= 59
+                ):
+                    programmes.append(
+                        (
+                            title,
+                            hour,
+                            minute,
+                        )
+                    )
+                    break
+
+            container = container.parent
+
+    # Remove duplicates while preserving order.
+    unique = []
+    seen = set()
+
+    for programme in programmes:
+        key = (
+            programme[0],
+            programme[1],
+            programme[2],
+        )
+
+        if key not in seen:
+            seen.add(key)
+            unique.append(programme)
+
+    return unique
 
 
 # ------------------------------------------------------------
