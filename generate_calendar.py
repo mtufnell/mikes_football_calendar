@@ -135,106 +135,151 @@ def parse_time(text):
 
     return hour, minute
 
-
 def extract_matches(soup):
     """
-    Extract fixtures from Live Football On TV.
+    Extract fixtures from the current Live Football On TV page.
 
-    The site uses:
-      .span12.matchdate
-      .span4.matchfixture
-      .span4.competition
-      .span1.kickofftime
-      .span3.channels
+    The site currently presents each fixture in this order:
+
+        date
+        kick-off
+        fixture
+        competition
+        channels
+
+    We deliberately parse the page's text sequence rather than relying
+    on the site's CSS class names, which have changed over time.
     """
+    text_items = [
+        clean(text)
+        for text in soup.stripped_strings
+        if clean(text)
+    ]
 
-    all_tags = list(soup.find_all(True))
-    positions = {id(tag): i for i, tag in enumerate(all_tags)}
+    date_pattern = re.compile(
+        r"^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+        r"\s+\d{1,2}(?:st|nd|rd|th)?\s+"
+        r"(?:January|February|March|April|May|June|July|August|"
+        r"September|October|November|December)"
+        r"\s+\d{4}$",
+        re.IGNORECASE,
+    )
 
-    dates = []
+    time_pattern = re.compile(
+        r"^\d{1,2}:\d{2}$"
+    )
 
-    for tag in soup.select(".span12.matchdate"):
-        parsed = parse_date(tag.get_text(" ", strip=True))
-        if parsed:
-            dates.append((positions.get(id(tag), 0), parsed))
+    competition_names = {
+        "Premier League",
+        "Champions League",
+        "FA Cup",
+        "Carabao Cup",
+        "League Cup",
+    }
 
     fixtures = []
+    current_date = None
+    i = 0
 
-    for fixture_tag in soup.select(".span4.matchfixture"):
+    while i < len(text_items):
+        item = text_items[i]
 
-        # Find the nearest parent containing the other fields.
-        container = fixture_tag
-
-        for _ in range(8):
-            if not container.parent:
-                break
-
-            container = container.parent
-
-            if (
-                container.select_one(".span1.kickofftime")
-                and container.select_one(".span4.competition")
-                and container.select_one(".span3.channels")
-            ):
-                break
-
-        fixture = clean(fixture_tag.get_text(" ", strip=True))
-
-        competition_tag = container.select_one(".span4.competition")
-        kickoff_tag = container.select_one(".span1.kickofftime")
-        channels_tag = container.select_one(".span3.channels")
-
-        if not competition_tag or not kickoff_tag or not channels_tag:
+        # ----------------------------------------------------
+        # Date heading
+        # ----------------------------------------------------
+        if date_pattern.match(item):
+            current_date = parse_date(item)
+            i += 1
             continue
 
-        competition = clean(
-            competition_tag.get_text(" ", strip=True)
-        )
-        kickoff_text = clean(
-            kickoff_tag.get_text(" ", strip=True)
-        )
-        channels = clean(
-            channels_tag.get_text(" ", strip=True)
-        )
+        # ----------------------------------------------------
+        # We need a date before we can parse a fixture.
+        # ----------------------------------------------------
+        if current_date is None:
+            i += 1
+            continue
 
-        time_parts = parse_time(kickoff_text)
+        # ----------------------------------------------------
+        # Kick-off time
+        # ----------------------------------------------------
+        if not time_pattern.match(item):
+            i += 1
+            continue
+
+        time_parts = parse_time(item)
         if not time_parts:
+            i += 1
             continue
-
-        # Find the most recent date heading before this fixture.
-        fixture_position = positions.get(id(fixture_tag), 0)
-
-        matching_dates = [
-            date
-            for pos, date in dates
-            if pos < fixture_position
-        ]
-
-        if not matching_dates:
-            continue
-
-        match_date = matching_dates[-1]
 
         hour, minute = time_parts
-        start = match_date.replace(
-            hour=hour,
-            minute=minute,
-            second=0,
-            microsecond=0,
-        )
 
-        fixtures.append(
-            {
-                "fixture": fixture,
-                "competition": competition,
-                "channels": channels,
-                "start": start,
-            }
-        )
+        # ----------------------------------------------------
+        # The next items should be:
+        #   fixture
+        #   competition
+        #   channels...
+        # ----------------------------------------------------
+        if i + 2 >= len(text_items):
+            break
+
+        fixture = text_items[i + 1]
+        competition = text_items[i + 2]
+
+        # Make sure this really looks like a football fixture.
+        if (
+            " v " not in fixture.lower()
+            or competition not in competition_names
+        ):
+            i += 1
+            continue
+
+        # ----------------------------------------------------
+        # Collect channel names until the next time/date.
+        # ----------------------------------------------------
+        channels = []
+        j = i + 3
+
+        while j < len(text_items):
+            next_item = text_items[j]
+
+            if date_pattern.match(next_item):
+                break
+
+            if time_pattern.match(next_item):
+                break
+
+            # Another competition means we've probably hit
+            # malformed/unexpected page structure.
+            if next_item in competition_names:
+                break
+
+            channels.append(next_item)
+            j += 1
+
+        # ----------------------------------------------------
+        # Only accept fixtures with at least one channel.
+        # ----------------------------------------------------
+        if channels:
+            start = current_date.replace(
+                hour=hour,
+                minute=minute,
+                second=0,
+                microsecond=0,
+            )
+
+            fixtures.append(
+                {
+                    "fixture": fixture,
+                    "competition": competition,
+                    "channels": clean(" ".join(channels)),
+                    "start": start,
+                }
+            )
+
+        i = max(j, i + 3)
 
     return fixtures
-
-
+    
 def fetch_live_football(url):
     soup = get_soup(url)
     return extract_matches(soup)
