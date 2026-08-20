@@ -12,15 +12,12 @@ from bs4 import BeautifulSoup
 #
 # Sources:
 #   Live Football On TV - UK television listings
-#   BBC One schedules - Match of the Day / Match of the Day 2
 #
 # Included:
 #   - Premier League matches shown on Sky Sports
 #   - Liverpool FA Cup matches
 #   - Liverpool Carabao Cup matches
 #   - Amazon Prime Video Champions League matches
-#   - BBC Match of the Day
-#   - BBC Match of the Day 2
 #
 # Excluded:
 #   - TNT Sports
